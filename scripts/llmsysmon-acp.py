@@ -172,7 +172,7 @@ def build_latency_text():
     for d in latency["devices"]:
         wa = d["write_await_ms"] if d["write_await_ms"] is not None else "n/a"
         ta = d["total_await_ms"] if d["total_await_ms"] is not None else "n/a"
-        lines.append(f"{d['name']}: write_await={wa} ms, total_await={ta} ms")
+        lines.append(f"{d['name']:<14} write {wa:>8} ms   total {ta:>8} ms")
     return "\n".join(lines)
 
 

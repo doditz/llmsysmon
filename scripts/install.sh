@@ -14,10 +14,32 @@ if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then
   C_N='\033[0m'
 fi
 
-say()  { if [ "${JSON_MODE:-0}" = 1 ]; then printf "${C_B}[llmsysmon]${C_N} %s\n" "$*" >&2; else printf "${C_B}[llmsysmon]${C_N} %s\n" "$*"; fi }
-ok()   { if [ "${JSON_MODE:-0}" = 1 ]; then printf "${C_G}[ok]${C_N}        %s\n" "$*" >&2; else printf "${C_G}[ok]${C_N}        %s\n" "$*"; fi }
-warn() { printf "${C_Y}[warn]${C_N}      %s\n" "$*" >&2; }
-die()  { if [ "${JSON_MODE:-0}" = 1 ]; then json_evt "error" "fail" "$(printf '%s' "$*" | tr -d '"')"; fi; printf "${C_R}[error]${C_N}     %s\n" "$*" >&2; exit 1; }
+banner() {
+  cat <<'EOF'
+╔═══════════════════════════════════════════════════════════════╗
+║   llmsysmon — your SSD's health-checker that never sleeps      ║
+║   poll 1.5s · alarm >80ms ×3 samples · live hook: /pmie        ║
+╚═══════════════════════════════════════════════════════════════╝
+EOF
+}
+sec() { if [ "${JSON_MODE:-0}" = 1 ]; then printf '\n╌╌ %s ╌╌\n' "$*" >&2; else printf '\n╌╌ %s ╌╌\n' "$*"; fi }
+card() {
+  cat <<EOF
+┌──────────────────────────────────────────────────────────────┐
+│  llmsysmon is live                                            │
+│   rules    $SSD_WATCH_CONF
+│   hook     /pmie   (pretty heartbeat, runs pmie -v -t 1.5)
+│   alias    /pmie   (shell shorthand)
+│   alerts   /var/log/pcp/pmie/$(hostname)/ssd_watch.log
+│   next     type: /pmie
+└──────────────────────────────────────────────────────────────┘
+EOF
+}
+
+say()  { if [ "${JSON_MODE:-0}" = 1 ]; then printf "${C_B}· %s${C_N}\n" "$*" >&2; else printf "${C_B}· %s${C_N}\n" "$*"; fi }
+ok()   { if [ "${JSON_MODE:-0}" = 1 ]; then printf "${C_G}  ✓  %s${C_N}\n" "$*" >&2; else printf "${C_G}  ✓  %s${C_N}\n" "$*"; fi }
+warn() { printf "${C_Y}  ⚠  %s${C_N}\n" "$*" >&2; }
+die()  { if [ "${JSON_MODE:-0}" = 1 ]; then json_evt "error" "fail" "$(printf '%s' "$*" | tr -d '"')"; fi; printf "${C_R}  ✗  %s${C_N}\n" "$*" >&2; exit 1; }
 
 usage() {
   cat <<'USAGE'
@@ -82,7 +104,7 @@ in_container() {  # inverted isolation-boundary check
 has_systemd() { [ -d "${LLMSYSMON_SYSTEMD_DIR:-/run/systemd/system}" ]; }
 
 gen_alias_line() {
-  printf "%s" "alias /pmie='pmie -v -t 1.5 -c /etc/pcp/pmie/ssd_watch.conf'"
+  printf "%s" "alias /pmie='command /pmie'"
 }
 
 alias_present() { grep -qF 'alias /pmie=' "$1" 2>/dev/null; }
@@ -117,9 +139,28 @@ run_selftest() {
   assert_fails env LLMPMCIE_OS_RELEASE="$tmp/rel" detect_os_family
   assert_fails env LLMPMCIE_OS_RELEASE="$tmp/nonexistent" detect_os_family
 
+  # banner + card formatting
+  if banner | grep -q 'llmsysmon' && banner | grep -q '1.5s'; then
+    pass "banner contains llmsysmon and 1.5s"
+  else
+    fail "banner missing llmsysmon or 1.5s"
+  fi
+  if card | grep -q 'next' && card | grep -q '/pmie'; then
+    pass "card contains next and /pmie"
+  else
+    fail "card missing next or /pmie"
+  fi
+
+  # rule heredoc contains structured alarm string
+  if sed -n '/^\/\/ llmsysmon/,/^LLMPMCIE_RULES$/p' "$0" | grep -q 'threshold=80ms sustained=3x1.5s'; then
+    pass "rule heredoc contains structured alarm string"
+  else
+    fail "rule heredoc missing structured alarm string"
+  fi
+
   # alias generation + idempotency guard
   assert_eq "$(gen_alias_line)" \
-    "alias /pmie='pmie -v -t 1.5 -c /etc/pcp/pmie/ssd_watch.conf'" "alias line exact"
+    "alias /pmie='command /pmie'" "alias line exact"
   printf '%s\n' "$(gen_alias_line)" > "$tmp/rc"
   if alias_present "$tmp/rc"; then pass "alias_present detects existing alias"; else fail "alias_present misses existing alias"; fi
   : > "$tmp/rc"
@@ -238,8 +279,10 @@ main() {
   done
 
   json_evt "start" "ok" "llmsysmon-installer"
+  [ "${JSON_MODE:-0}" = 0 ] && banner
   say "llmsysmon — native SSD telemetry installer"
 
+  sec "Pre-checks"
   # 1) container isolation boundary (inverted: exit cleanly when inside)
   if in_container; then
     say "Container boundary detected in /proc/1/cgroup — pmie belongs on the host; skipping install."
@@ -289,6 +332,7 @@ main() {
     json_evt "elevation" "ok" "root"
   fi
 
+  sec "Dependencies"
   # 6) dependency layer
   install_packages "$family" "$SUDO"
   if [ "$DRY_RUN" = 1 ]; then
@@ -297,6 +341,7 @@ main() {
     json_evt "packages" "ok" "$family packages checked"
   fi
 
+  sec "Telemetry rules"
   # 7) telemetry rule injection
   say "injecting pmie rules -> $SSD_WATCH_CONF"
   if [ "$DRY_RUN" = 1 ]; then
@@ -311,13 +356,13 @@ delta = 1.5 sec;
 
 some_inst (
     all_sample ( disk.dev.write_rawactive @0..2 / disk.dev.write @0..2 > 80 msec )
-) -> print "llmsysmon: SSD WRITE latency >80ms sustained on %i" &
-     syslog "llmsysmon: SSD write latency >80ms sustained on %i";
+) -> print "[llmsysmon] ALARM write-await device=%i threshold=80ms sustained=3x1.5s" &
+     syslog "llmsysmon ALARM write-await device=%i threshold=80ms sustained=3x1.5s";
 
 some_inst (
     all_sample ( disk.dev.total_rawactive @0..2 / disk.dev.total @0..2 > 80 msec )
-) -> print "llmsysmon: SSD TOTAL queue latency >80ms sustained on %i" &
-     syslog "llmsysmon: SSD total queue latency >80ms sustained on %i";
+) -> print "[llmsysmon] ALARM total-await device=%i threshold=80ms sustained=3x1.5s" &
+     syslog "llmsysmon ALARM total-await device=%i threshold=80ms sustained=3x1.5s";
 
 // Active write-stress hook (disabled by default — uncomment to enable):
 // some_inst (
@@ -362,6 +407,7 @@ LLMPMCIE_CONTROL
   fi
   json_evt "instance" "ok" "$PMIE_CONTROL_D/llmsysmon"
 
+  sec "Service wiring"
   # 10) systemd wiring: pmcd, pmlogger, pmie + instance watchdog timer
   for svc in pmcd pmlogger pmie; do
     if systemctl is-active --quiet "$svc" 2>/dev/null; then
@@ -401,15 +447,23 @@ LLMPMCIE_CONTROL
     warn "pmie_check not found — reinstall the pcp package"
   fi
 
+  sec "Live hook"
   # 12) install the /pmie binary command hook (path command, works in any shell)
   say "installing /pmie binary command hook"
   if [ "$DRY_RUN" = 1 ]; then
-    dry_run_trace "write /pmie wrapper (exec pmie -v -t 1.5 -c $SSD_WATCH_CONF)"
+    dry_run_trace "write /pmie wrapper (pretty heartbeat, pmie -v -t 1.5 -c $SSD_WATCH_CONF)"
   else
     $SUDO tee /pmie >/dev/null <<'LLMPMCIE_HOOK'
 #!/bin/sh
-# llmsysmon — instant SSD latency trace (managed by scripts/install.sh)
-exec pmie -v -t 1.5 -c /etc/pcp/pmie/ssd_watch.conf
+# llmsysmon — instant SSD latency heartbeat (managed by scripts/install.sh)
+pmie -v -t 1.5 -c /etc/pcp/pmie/ssd_watch.conf 2>/dev/null | awk '
+/expr_1:/ { w=$0; sub(/^.*expr_1: */,"",w); next }
+/expr_2:/ { t=$0; sub(/^.*expr_2: */,"",t);
+            ws = (w=="true") ? "🚨 ALARM" : (w=="false" ? "ok      " : "warming…");
+            ts = (t=="true") ? "🚨 ALARM" : (t=="false" ? "ok      " : "warming…");
+            printf "  write queue %-10s   total queue %-10s\n", ws, ts; fflush(); next }
+/\[llmsysmon\] ALARM/ { printf "  🚨 %s\n", $0; fflush() }
+'
 LLMPMCIE_HOOK
     $SUDO chmod 0755 /pmie
     ok "/pmie binary hook installed"
@@ -426,7 +480,7 @@ LLMPMCIE_HOOK
       dry_run_trace "append to $rc_file: $(gen_alias_line)"
     else
       {
-        printf '\n# llmsysmon — instant SSD latency trace (managed by scripts/install.sh)\n'
+        printf '\n# llmsysmon — /pmie alias (managed by scripts/install.sh)\n'
         printf '%s\n' "$(gen_alias_line)"
       } >> "$rc_file" || die "could not write $rc_file"
       ok "alias installed — reload with: source $rc_file"
@@ -435,12 +489,10 @@ LLMPMCIE_HOOK
   fi
 
   # 14) summary
-  say "------------------------------------------------------------"
-  say "llmsysmon setup complete"
-  say "  live trace: /pmie   (pmie -v -t 1.5 -c $SSD_WATCH_CONF)"
-  say "  rules:      $SSD_WATCH_CONF"
-  say "  alerts:     /var/log/pcp/pmie/$(hostname)/ssd_watch.log"
-  [ "$DRY_RUN" = 1 ] && say "dry-run: nothing was changed"
+  if [ "${JSON_MODE:-0}" = 0 ]; then
+    [ "$DRY_RUN" = 1 ] && say "dry-run: nothing was changed"
+    card
+  fi
   json_evt "done" "ok" "llmsysmon setup complete"
 }
 
