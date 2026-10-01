@@ -48,9 +48,12 @@ Open a terminal and type:
 /pmie
 ```
 
-*Yes, with the slash — it's part of the name! The installer places a tiny program
-called `/pmie` at the very top of your file system, so the slash is just the first
-letter of its address.*
+*Two different slashes, two different things — worth knowing:*
+- **In an agent app** (Claude Code, Cursor, this kind of assistant), `/llmsysmon` is how
+  you *invoke the skill* — the leading slash is the universal "run this skill" convention.
+- **On your machine**, `/pmie` is a real little program the installer places at the top of
+  your file system — its address starts at `/`, which is why the slash is part of its name.
+  Type it in any terminal and it runs.*
 
 You'll see a live heartbeat of your drives, refreshing every 1.5 seconds. When a
 drive crosses the line, the alarm fires and you see exactly which device and why:
