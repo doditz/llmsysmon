@@ -40,7 +40,12 @@ detect_os_family() {  # prints debian|rhel; non-zero on unknown/unreadable
 }
 
 in_container() {  # inverted isolation-boundary check
-  grep -qE '(docker|kubepods|containerd|podman|libpod|lxc)' /proc/1/cgroup 2>/dev/null
+  local cgroup_file="${LLMSYSMON_CGROUP_FILE:-/proc/1/cgroup}"
+  local dockerenv_file="${LLMSYSMON_DOCKERENV_FILE:-/.dockerenv}"
+  if [ -r "$cgroup_file" ] && grep -qE '(docker|kubepods|containerd|podman|libpod|lxc)' "$cgroup_file" 2>/dev/null; then
+    return 0
+  fi
+  [ -e "$dockerenv_file" ]
 }
 
 gen_alias_line() {
@@ -87,6 +92,29 @@ run_selftest() {
   : > "$tmp/rc"
   if alias_present "$tmp/rc"; then fail "alias_present false positive on empty file"; else pass "alias_present ignores empty file"; fi
 
+  # container detection (cgroup v1/v2 markers + dockerenv fallback)
+  printf '0::/\n' > "$tmp/cgroup_v2"
+  : > "$tmp/dockerenv"
+  if LLMSYSMON_CGROUP_FILE="$tmp/cgroup_v2" LLMSYSMON_DOCKERENV_FILE="$tmp/dockerenv" in_container; then
+    pass "in_container detects cgroup v2 0::/ via dockerenv fallback"
+  else
+    fail "in_container false negative on cgroup v2 0::/ with dockerenv"
+  fi
+
+  printf '12:freezer:/docker/c0ffee\n' > "$tmp/cgroup_docker"
+  if LLMSYSMON_CGROUP_FILE="$tmp/cgroup_docker" LLMSYSMON_DOCKERENV_FILE="$tmp/nosuchdockerenv" in_container; then
+    pass "in_container detects docker cgroup marker"
+  else
+    fail "in_container false negative on docker cgroup marker"
+  fi
+
+  printf '0::/init.scope\n' > "$tmp/cgroup_host"
+  if LLMSYSMON_CGROUP_FILE="$tmp/cgroup_host" LLMSYSMON_DOCKERENV_FILE="$tmp/nosuchdockerenv" in_container; then
+    fail "in_container false positive on host cgroup without dockerenv"
+  else
+    pass "in_container returns false for host cgroup with missing dockerenv"
+  fi
+
   rm -rf "$tmp"
   if [ "$fails" -eq 0 ]; then echo "SELF-TEST: all PASS"; exit 0; else echo "SELF-TEST: $fails FAIL"; exit 1; fi
 }
@@ -109,7 +137,8 @@ install_packages() {
       if ! dpkg -s pcp >/dev/null 2>&1 || ! dpkg -s pcp-gui >/dev/null 2>&1; then
         say "inverted dpkg check: pcp/pcp-gui missing — installing"
         if [ "$DRY_RUN" = 1 ]; then
-          printf '[dry-run] %s update && %s install pcp pcp-gui\n' "$sudo_bin" "$sudo_bin"
+          local apt_cmd="${sudo_bin:+$sudo_bin }apt-get"
+          printf '[dry-run] %s update && %s install pcp pcp-gui\n' "$apt_cmd" "$apt_cmd"
           return 0
         fi
         if command -v aptitude >/dev/null 2>&1; then
@@ -130,7 +159,8 @@ install_packages() {
       if ! rpm -q pcp >/dev/null 2>&1 || ! rpm -q pcp-gui >/dev/null 2>&1; then
         say "inverted rpm check: pcp/pcp-gui missing — installing via dnf"
         if [ "$DRY_RUN" = 1 ]; then
-          printf '[dry-run] %s dnf -y install pcp pcp-gui\n' "$sudo_bin"
+          local dnf_cmd="${sudo_bin:+$sudo_bin }dnf"
+          printf '[dry-run] %s -y install pcp pcp-gui\n' "$dnf_cmd"
           return 0
         fi
         run $sudo_bin dnf -y install pcp || die "dnf install pcp failed"
@@ -178,7 +208,11 @@ main() {
     command -v sudo >/dev/null 2>&1 || die "sudo is required for elevated steps"
     SUDO='sudo'
   fi
-  ok "elevation: ${SUDO:+sudo (prompts when needed)}${SUDO:-root}"
+  if [ -n "$SUDO" ]; then
+    ok "elevation: sudo (prompts when needed)"
+  else
+    ok "elevation: root"
+  fi
 
   # 5) dependency layer
   install_packages "$family" "$SUDO"
@@ -268,7 +302,8 @@ LLMPMCIE_CONTROL
   pmie_check_bin="$(command -v pmie_check 2>/dev/null || true)"
   [ -n "$pmie_check_bin" ] || pmie_check_bin='/usr/lib/pcp/bin/pmie_check'
   if [ "$DRY_RUN" = 1 ]; then
-    printf '[dry-run] %s pmie_check (starts ssd_watch instance)\n' "$SUDO"
+    local pmie_check_cmd="${SUDO:+$SUDO }pmie_check"
+    printf '[dry-run] %s (starts ssd_watch instance)\n' "$pmie_check_cmd"
   elif [ -x "$pmie_check_bin" ]; then
     say "starting pmie instances via pmie_check"
     run $SUDO "$pmie_check_bin" || warn "pmie_check exited non-zero (see /var/log/pcp/pmie/pmie_check.log)"
