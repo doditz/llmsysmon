@@ -39,12 +39,14 @@ when the active write (or total) queue sustains an average wait above 80 ms for
 - Writes the rule engine config to `/etc/pcp/pmie/ssd_watch.conf`.
 - Registers a dedicated pmie instance in `/etc/pcp/pmie/control.d/llmpmcie`.
 - Enables and starts `pmcd`, `pmlogger`, `pmie` (systemd) plus `pmie_check.timer`.
-- Appends an idempotent `/pmie` alias to the active shell's profile file.
+- Installs the executable `/pmie` binary command hook and appends an idempotent
+  `/pmie` shell alias to the active shell's profile file.
 
 ## Allowed Tools
 - `bash ./scripts/install.sh` — the native setup script (safe, idempotent, testable).
-- `/pmie` — the local binary command hook: a persistent shell alias resolving to the
-  PCP inference engine binary (`pmie -v -t 1.5 -c /etc/pcp/pmie/ssd_watch.conf`).
+- `/pmie` — the local binary command hook installed at `/pmie` (a tiny executable
+  wrapper that runs `pmie -v -t 1.5 -c /etc/pcp/pmie/ssd_watch.conf`), plus a
+  persistent shell alias of the same name for interactive use.
 
 ## Notes for agents
 - Inside a container the installer exits 0 with a notice (pmie belongs on the host).
