@@ -7,6 +7,12 @@ tells you (and your AI agents) the moment your drive starts to struggle.
 
 > Previously known as: llmpmcie (both names are searchable; llmsysmon is canonical).
 
+**In any agent app (Claude Code, Cursor, Copilot, this kind of assistant): just type
+`/llmsysmon`.** The skill checks your SSDs, renders a clean human report, and arms the
+24/7 watchdog if it isn't running yet — the same experience in every compatible agent,
+no shell knowledge needed. The terminal tools below (`/pmie` and friends) are optional
+shortcuts for when you're already in a shell.
+
 ## The problem, in plain words
 
 SSDs usually fail *slowly first*: tiny, repeated stutters before the real trouble.

@@ -12,13 +12,26 @@ latency in real time: rules poll every 1.5 seconds and raise print + syslog alar
 when the active write (or total) queue sustains an average wait above 80 ms for
 3 consecutive samples.
 
+## Invocation — /llmsysmon
+This skill is called as the slash command `/llmsysmon` in agent apps (Claude Code,
+Cursor, Copilot, this kind of assistant), and it works identically for every
+compatible agent via the bundled MCP/ACP servers. When invoked, ALWAYS:
+
+1. **Gather** — run the skill's own tooling, never raw dumps:
+   `python3 ./scripts/llmsysmon-mcp.py` (tools: `llmsysmon_status`, `llmsysmon_latency`,
+   `llmsysmon_alerts`, `llmsysmon_install_dry_run`) or the ACP server
+   `python3 ./scripts/llmsysmon-acp.py`.
+2. **Render the human report** — see "Reporting to humans" below.
+3. **Arm if needed** — if the report shows the watchdog not installed (`pmie`
+   inactive or `/etc/pcp/pmie/ssd_watch.conf` missing), say so and offer the
+   one-liner: `bash ./scripts/install.sh` (needs sudo; safe and idempotent).
+
 ## When to use
-- A workspace agent or operator needs real-time SSD write-latency / queue-stress
-  telemetry on the local Linux host.
-- You want the persistent `/pmie` binary command hook that prints live latency evaluations on demand.
+- A user or agent invokes `/llmsysmon` to check SSD health or arm the watchdog.
+- Any workspace agent needs live SSD write-latency / queue-stress telemetry on the local Linux host.
 
 ## How to use
-1. Run the native setup exactly once:
+1. Run the native setup exactly once (arms the 24/7 watchdog):
    ```bash
    bash ./scripts/install.sh
    ```
