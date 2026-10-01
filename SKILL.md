@@ -2,7 +2,9 @@
 name: llmsysmon
 description: Automated local telemetry engine for tracking SSD latency and write stress thresholds using PCP pmie.
 ---
-# llmpmcie Instructions
+# llmsysmon Instructions
+
+> Previously known as: llmpmcie (both names are searchable; llmsysmon is canonical).
 
 `llmsysmon` is a native, zero-dependency telemetry skill for Linux hosts. It installs
 and wires Performance Co-Pilot's `pmie` inference daemon to watch SSD/disk storage
@@ -37,7 +39,7 @@ when the active write (or total) queue sustains an average wait above 80 ms for
 - Debian/Ubuntu: installs `pcp` + `pcp-gui` via aptitude (fallback apt-get).
   RHEL/Fedora/CentOS/AlmaLinux: installs them via dnf.
 - Writes the rule engine config to `/etc/pcp/pmie/ssd_watch.conf`.
-- Registers a dedicated pmie instance in `/etc/pcp/pmie/control.d/llmpmcie`.
+- Registers a dedicated pmie instance in `/etc/pcp/pmie/control.d/llmsysmon`.
 - Enables and starts `pmcd`, `pmlogger`, `pmie` (systemd) plus `pmie_check.timer`.
 - Installs the executable `/pmie` binary command hook and appends an idempotent
   `/pmie` shell alias to the active shell's profile file.
