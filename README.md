@@ -1,5 +1,7 @@
 # llmsysmon
 
+[![skills.sh](https://skills.sh/b/doditz/llmsysmon)](https://skills.sh/doditz/llmsysmon)
+
 **Your SSD's health-checker that never sleeps.**
 
 It watches how fast your SSD answers write requests — every 1.5 seconds, all day — and

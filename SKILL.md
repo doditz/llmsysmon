@@ -1,6 +1,6 @@
 ---
 name: llmsysmon
-description: Automated local telemetry engine for tracking SSD latency and write stress thresholds using PCP pmie.
+description: Automated local telemetry engine for tracking SSD latency and write stress thresholds using PCP pmie. Use when a user invokes /llmsysmon, asks to check SSD or disk health/latency, reports a slow or stuttering drive, wants 24/7 storage monitoring with alarms, or needs live write-await metrics for disks (nvme/sata) on a Linux host.
 ---
 # llmsysmon Instructions
 
@@ -26,8 +26,25 @@ compatible agent via the bundled MCP/ACP servers. When invoked, ALWAYS:
    inactive or `/etc/pcp/pmie/ssd_watch.conf` missing), say so and offer the
    one-liner: `bash ./scripts/install.sh` (needs sudo; safe and idempotent).
 
+## Agentic protocol on warning
+When any device shows an elevated await (>80 ms), DO NOT stop at the report:
+1. **Warn the user prominently** — headline the device, the value, and the threshold.
+2. **Investigate** — resample 3-4 windows (1.5-2 s apart) computing write/total await
+   per window (`disk.dev.write_rawactive`/`disk.dev.write` deltas); note the write
+   volume (counts + `disk.dev.write_bytes`) and identify candidate writers via
+   `ps -eo pid,comm,%cpu --sort=-%cpu` and `proc.psinfo.psargs`.
+3. **Classify** — sustained (hot every window) vs periodic bursts (hot windows
+   alternating with idle — typically fsync/checkpoint flushing from loggers,
+   databases, or agent sessions) vs transient single spike.
+4. **Recommend** — sustained: dig into the identified writer; bursts: point at the
+   fsync-heavy process and note the watchdog's 3-sample rule distinguishes real
+   queue stress from these; transient: no action. Offer `--detach`/`--detach-gui`
+   for live observation.
+
 ## When to use
 - A user or agent invokes `/llmsysmon` to check SSD health or arm the watchdog.
+- The user says things like: "is my disk slow?", "check SSD latency", "why is my
+  drive stuttering?", "watch my storage and alert me", "set up disk monitoring".
 - Any workspace agent needs live SSD write-latency / queue-stress telemetry on the local Linux host.
 
 ## How to use
