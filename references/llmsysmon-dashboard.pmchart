@@ -2,7 +2,7 @@
 version 1
 
 global width 860 height 480
-chart title "Write await (ms) — per device [%h]" style line
+chart title "Write await (ms) — per device [%h]" style plot
 	plot legend "w_await" color "#4ea1ff" metric disk.dev.w_await matching "nvme|sd|md|dm"
-chart title "Total await (ms) — per device [%h]" style line
+chart title "Total await (ms) — per device [%h]" style plot
 	plot legend "await" color "#7ee787" metric disk.dev.await matching "nvme|sd|md|dm"

@@ -227,6 +227,62 @@ run_selftest() {
     fail "dashboard view file not found at $view_src"
   fi
 
+  # Task 6-fix: install.sh must reference dark-mode provisioning and valid chart style
+  for token in 'gsettings get org.gnome.desktop.interface color-scheme' 'chartBackgroundColor=#171720' 'style plot'; do
+    if grep -qF -- "$token" "$0"; then
+      pass "install.sh contains '$token'"
+    else
+      fail "install.sh missing '$token'"
+    fi
+  done
+
+  # Task 6-fix: dashboard view must use 'style plot' and never 'style line'
+  if grep -qF 'style plot' "$view_src"; then
+    pass "dashboard view uses style plot"
+  else
+    fail "dashboard view missing style plot"
+  fi
+  if grep -qF 'style line' "$view_src"; then
+    fail "dashboard view still contains invalid style line"
+  else
+    pass "dashboard view has no style line"
+  fi
+
+  # Task 6-fix: display-safe --detach-gui e2e with stubbed pmchart/gsettings
+  local hook_t6="$tmp/hook_t6" stub_bin="$tmp/bin" stub_log="$tmp/stub.log"
+  mkdir -p "$stub_bin"
+  { printf '#!/bin/sh\n'; sed -n '/^case "\${1:-}" in$/,/^LLMPMCIE_HOOK$/p' "$0" | head -n -1; } > "$hook_t6"
+  chmod +x "$hook_t6"
+  cat > "$stub_bin/pmchart" <<'STUB'
+#!/bin/sh
+printf 'STUB-PMCHART:%s:%s:%s\n' "${QT_QPA_PLATFORMTHEME:-}" "${DRI_PRIME:-}" "${3:-}" >> "${STUB_LOG:-/tmp/stub.log}"
+STUB
+  chmod +x "$stub_bin/pmchart"
+  cat > "$stub_bin/gsettings" <<'STUB'
+#!/bin/sh
+printf "'prefer-dark'\n"
+STUB
+  chmod +x "$stub_bin/gsettings"
+  STUB_LOG="$stub_log" HOME="$tmp" PATH="$stub_bin:$PATH" "$hook_t6" --detach-gui >/dev/null 2>&1
+  local hook_rc=$?
+  # allow background stub pmchart to finish writing
+  for _ in 1 2 3 4 5; do [ -s "$stub_log" ] && break; sleep 0.1; done
+  if [ "$hook_rc" -eq 0 ]; then
+    pass "--detach-gui hook exits 0"
+  else
+    fail "--detach-gui hook exited $hook_rc"
+  fi
+  if [ -f "$stub_log" ] && grep -qF 'gtk3:1' "$stub_log"; then
+    pass "stub pmchart saw gtk3 theme and dGPU flag"
+  else
+    fail "stub pmchart log missing gtk3:1 (log: $(cat "$stub_log" 2>/dev/null || echo '<none>'))"
+  fi
+  if [ -f "$tmp/.config/PCP/pmchart.conf" ] && grep -qF 'chartBackgroundColor=#171720' "$tmp/.config/PCP/pmchart.conf"; then
+    pass "dark mode prefs written when desktop prefers dark"
+  else
+    fail "dark mode prefs missing under stub HOME"
+  fi
+
   rm -rf "$tmp"
   if [ "$fails" -eq 0 ]; then echo "SELF-TEST: all PASS"; exit 0; else echo "SELF-TEST: $fails FAIL"; exit 1; fi
 }
@@ -493,6 +549,19 @@ case "${1:-}" in
     exit 0 ;;
   --detach-gui)
     if command -v pmchart >/dev/null 2>&1; then
+      if command -v gsettings >/dev/null 2>&1; then
+        SCHEME=$(gsettings get org.gnome.desktop.interface color-scheme 2>/dev/null || printf "'default'")
+        PREFS_DIR="$HOME/.config/PCP"
+        PREFS="$PREFS_DIR/pmchart.conf"
+        case "$SCHEME" in
+          *dark*)
+            mkdir -p "$PREFS_DIR"
+            if ! grep -q 'chartBackgroundColor' "$PREFS" 2>/dev/null; then
+              printf '[pmchart]\nchartBackgroundColor=#171720\n' >> "$PREFS"
+            fi
+            ;;
+        esac
+      fi
       QT_QPA_PLATFORMTHEME=gtk3 DRI_PRIME=1 setsid pmchart \
         -c /etc/pcp/llmsysmon/dashboard.pmchart -t 1.5s >/dev/null 2>&1 &
       echo "llmsysmon pmchart dashboard opening (desktop theme, dGPU)…"
