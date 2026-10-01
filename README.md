@@ -48,6 +48,10 @@ Open a terminal and type:
 /pmie
 ```
 
+*Yes, with the slash — it's part of the name! The installer places a tiny program
+called `/pmie` at the very top of your file system, so the slash is just the first
+letter of its address.*
+
 You'll see a live heartbeat of your drives, refreshing every 1.5 seconds. When a
 drive crosses the line, the alarm fires and you see exactly which device and why:
 
