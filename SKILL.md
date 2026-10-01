@@ -13,7 +13,7 @@ when the active write (or total) queue sustains an average wait above 80 ms for
 ## When to use
 - A workspace agent or operator needs real-time SSD write-latency / queue-stress
   telemetry on the local Linux host.
-- You want a persistent `/pmie` shell hook that prints live latency evaluations on demand.
+- You want the persistent `/pmie` binary command hook that prints live latency evaluations on demand.
 
 ## How to use
 1. Run the native setup exactly once:
@@ -43,8 +43,8 @@ when the active write (or total) queue sustains an average wait above 80 ms for
 
 ## Allowed Tools
 - `bash ./scripts/install.sh` — the native setup script (safe, idempotent, testable).
-- `/pmie` — local shell alias bound to the PCP inference engine binary
-  (`pmie -v -t 1.5 -c /etc/pcp/pmie/ssd_watch.conf`).
+- `/pmie` — the local binary command hook: a persistent shell alias resolving to the
+  PCP inference engine binary (`pmie -v -t 1.5 -c /etc/pcp/pmie/ssd_watch.conf`).
 
 ## Notes for agents
 - Inside a container the installer exits 0 with a notice (pmie belongs on the host).
