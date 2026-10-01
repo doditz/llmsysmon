@@ -631,13 +631,13 @@ def cmd_repair():
             needs_attention += 1
     else:
         template = _read_rule_template_from_install_sh() or RULE_TEMPLATE
-        tmp = _write_temp_file(template, ".conf")
+        tmp = Path("/tmp/llmsysmon-ssd_watch.conf")
+        tmp.write_text(template, encoding="utf-8")
         proc = _run(["pmie", "-C", "-c", str(tmp)], timeout=10)
-        tmp.unlink(missing_ok=True)
         if proc.returncode == 0:
-            _repair_print("✗ needs sudo", "rule file", f"regenerated template; run: sudo install -m 0644 <tmp> {SSD_WATCH_CONF}")
+            _repair_print("✗ needs sudo", "rule file", f"regenerated template; run: sudo install -m 0644 {tmp} {SSD_WATCH_CONF}")
         else:
-            _repair_print("✗ needs sudo", "rule file", f"template generated; run: sudo install -m 0644 <tmp> {SSD_WATCH_CONF}")
+            _repair_print("✗ needs sudo", "rule file", f"template generated; run: sudo install -m 0644 {tmp} {SSD_WATCH_CONF}")
         needs_attention += 1
 
     # 2) PATH: /etc/pcp/pmie/control.d/llmsysmon
