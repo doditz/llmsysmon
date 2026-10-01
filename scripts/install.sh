@@ -14,10 +14,41 @@ if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then
   C_N='\033[0m'
 fi
 
-say()  { printf "${C_B}[llmsysmon]${C_N} %s\n" "$*"; }
-ok()   { printf "${C_G}[ok]${C_N}        %s\n" "$*"; }
+say()  { if [ "${JSON_MODE:-0}" = 1 ]; then printf "${C_B}[llmsysmon]${C_N} %s\n" "$*" >&2; else printf "${C_B}[llmsysmon]${C_N} %s\n" "$*"; fi }
+ok()   { if [ "${JSON_MODE:-0}" = 1 ]; then printf "${C_G}[ok]${C_N}        %s\n" "$*" >&2; else printf "${C_G}[ok]${C_N}        %s\n" "$*"; fi }
 warn() { printf "${C_Y}[warn]${C_N}      %s\n" "$*" >&2; }
-die()  { printf "${C_R}[error]${C_N}     %s\n" "$*" >&2; exit 1; }
+die()  { if [ "${JSON_MODE:-0}" = 1 ]; then json_evt "error" "fail" "$(printf '%s' "$*" | tr -d '"')"; fi; printf "${C_R}[error]${C_N}     %s\n" "$*" >&2; exit 1; }
+
+usage() {
+  cat <<'USAGE'
+llmsysmon — native SSD telemetry installer
+
+Usage: scripts/install.sh [--help|-h] [--dry-run] [--json] [--self-test]
+
+Modes:
+  (default)     install pcp/pmie rules, systemd services, and /pmie hook
+  --dry-run     print actions without modifying the system
+  --json        emit NDJSON machine-readable lifecycle events to stdout
+  --self-test   run the embedded pure-function test suite
+
+Exit codes:
+  0  success, dry-run completed, container skip, or self-test passed
+  1  error (unsupported OS, missing systemd, missing dependencies, etc.)
+USAGE
+}
+
+json_evt() {  # $1 name, $2 status, $3 detail
+  [ "${JSON_MODE:-0}" = 1 ] || return 0
+  printf '{"event":"%s","status":"%s","detail":"%s"}\n' "$1" "$2" "$(printf '%s' "$3" | tr -d '"')"
+}
+
+dry_run_trace() {
+  if [ "${JSON_MODE:-0}" = 1 ]; then
+    printf '[dry-run] %s\n' "$*" >&2
+  else
+    printf '[dry-run] %s\n' "$*"
+  fi
+}
 
 # --- pure functions -----------------------------------------------------------
 detect_shell_rc() {  # $1: shell path -> profile rc file path
@@ -47,6 +78,8 @@ in_container() {  # inverted isolation-boundary check
   fi
   [ -e "$dockerenv_file" ]
 }
+
+has_systemd() { [ -d "${LLMSYSMON_SYSTEMD_DIR:-/run/systemd/system}" ]; }
 
 gen_alias_line() {
   printf "%s" "alias /pmie='pmie -v -t 1.5 -c /etc/pcp/pmie/ssd_watch.conf'"
@@ -115,6 +148,19 @@ run_selftest() {
     pass "in_container returns false for host cgroup with missing dockerenv"
   fi
 
+  # systemd availability pre-check
+  mkdir -p "$tmp/systemd"
+  if LLMSYSMON_SYSTEMD_DIR="$tmp/systemd" has_systemd; then
+    pass "has_systemd returns true when directory exists"
+  else
+    fail "has_systemd false negative on existing directory"
+  fi
+  if LLMSYSMON_SYSTEMD_DIR="$tmp/nosuchsystemd" has_systemd; then
+    fail "has_systemd false positive on missing directory"
+  else
+    pass "has_systemd returns false when directory missing"
+  fi
+
   rm -rf "$tmp"
   if [ "$fails" -eq 0 ]; then echo "SELF-TEST: all PASS"; exit 0; else echo "SELF-TEST: $fails FAIL"; exit 1; fi
 }
@@ -123,10 +169,13 @@ run_selftest() {
 SSD_WATCH_CONF='/etc/pcp/pmie/ssd_watch.conf'
 PMIE_CONTROL_D='/etc/pcp/pmie/control.d'
 DRY_RUN=0
-if [ "${1:-}" = "--dry-run" ] || [ "${LLMPMCIE_DRY_RUN:-0}" = 1 ]; then DRY_RUN=1; fi
+JSON_MODE=0
 
 run() {  # every lifecycle action is traced; dry-run prints instead of executing
-  if [ "$DRY_RUN" = 1 ]; then printf '[dry-run] %s\n' "$*"; return 0; fi
+  if [ "$DRY_RUN" = 1 ]; then
+    dry_run_trace "$*"
+    return 0
+  fi
   "$@"
 }
 
@@ -138,7 +187,7 @@ install_packages() {
         say "inverted dpkg check: pcp/pcp-gui missing — installing"
         if [ "$DRY_RUN" = 1 ]; then
           local apt_cmd="${sudo_bin:+$sudo_bin }apt-get"
-          printf '[dry-run] %s update && %s install pcp pcp-gui\n' "$apt_cmd" "$apt_cmd"
+          dry_run_trace "$apt_cmd update && $apt_cmd install pcp pcp-gui"
           return 0
         fi
         if command -v aptitude >/dev/null 2>&1; then
@@ -160,7 +209,7 @@ install_packages() {
         say "inverted rpm check: pcp/pcp-gui missing — installing via dnf"
         if [ "$DRY_RUN" = 1 ]; then
           local dnf_cmd="${sudo_bin:+$sudo_bin }dnf"
-          printf '[dry-run] %s -y install pcp pcp-gui\n' "$dnf_cmd"
+          dry_run_trace "$dnf_cmd -y install pcp pcp-gui"
           return 0
         fi
         run $sudo_bin dnf -y install pcp || die "dnf install pcp failed"
@@ -175,24 +224,47 @@ install_packages() {
 
 # --- main installer -----------------------------------------------------------
 main() {
+  # argument parsing at the very top
+  local arg
+  for arg in "$@"; do
+    case "$arg" in
+      --help|-h) usage; exit 0 ;;
+      --self-test) run_selftest ;;
+      --dry-run) DRY_RUN=1 ;;
+      --json) JSON_MODE=1 ;;
+      "") ;;
+      *) die "unknown argument: $arg (try --help)" ;;
+    esac
+  done
+
+  json_evt "start" "ok" "llmsysmon-installer"
   say "llmsysmon — native SSD telemetry installer"
-  if [ "${1:-}" = "--self-test" ]; then run_selftest; fi
 
   # 1) container isolation boundary (inverted: exit cleanly when inside)
   if in_container; then
     say "Container boundary detected in /proc/1/cgroup — pmie belongs on the host; skipping install."
+    json_evt "container" "skip" "container boundary detected"
     exit 0
   fi
   ok "not inside a container isolation boundary — proceeding"
+  json_evt "container" "ok" "host"
 
-  # 2) OS distribution matrix
+  # 2) systemd availability pre-check
+  if ! has_systemd; then
+    die "systemd not available ($([ -d /run/systemd/system ] || echo missing /run/systemd/system)) — llmsysmon requires systemd to wire pmcd/pmlogger/pmie"
+  fi
+  ok "systemd detected"
+  json_evt "systemd" "ok" "systemd available"
+
+  # 3) OS distribution matrix
   local family
   if ! family="$(detect_os_family)"; then
     die "unsupported OS: cannot match Debian/Ubuntu or RHEL/Fedora/CentOS/AlmaLinux/Rocky in /etc/os-release"
   fi
   say "OS family detected: $family"
+  json_evt "os" "ok" "$family"
 
-  # 3) active shell profile target
+  # 4) active shell profile target
   local rc_file
   rc_file="$(detect_shell_rc "${SHELL:-/bin/bash}")"
   if [ "$(id -u)" -eq 0 ] && [ -n "${SUDO_USER:-}" ]; then
@@ -201,8 +273,9 @@ main() {
     [ -n "$sudohome" ] && rc_file="$sudohome/$(basename "$rc_file")"
   fi
   say "shell profile target: $rc_file"
+  json_evt "shell" "ok" "$rc_file"
 
-  # 4) elevation strategy
+  # 5) elevation strategy
   local SUDO=''
   if [ "$(id -u)" -ne 0 ]; then
     command -v sudo >/dev/null 2>&1 || die "sudo is required for elevated steps"
@@ -210,17 +283,24 @@ main() {
   fi
   if [ -n "$SUDO" ]; then
     ok "elevation: sudo (prompts when needed)"
+    json_evt "elevation" "ok" "sudo"
   else
     ok "elevation: root"
+    json_evt "elevation" "ok" "root"
   fi
 
-  # 5) dependency layer
+  # 6) dependency layer
   install_packages "$family" "$SUDO"
+  if [ "$DRY_RUN" = 1 ]; then
+    json_evt "packages" "skipped" "dry-run"
+  else
+    json_evt "packages" "ok" "$family packages checked"
+  fi
 
-  # 6) telemetry rule injection
+  # 7) telemetry rule injection
   say "injecting pmie rules -> $SSD_WATCH_CONF"
   if [ "$DRY_RUN" = 1 ]; then
-    printf '[dry-run] write %s (1.5 s polling, >80 ms x 3 samples)\n' "$SSD_WATCH_CONF"
+    dry_run_trace "write $SSD_WATCH_CONF (1.5 s polling, >80 ms x 3 samples)"
   else
     $SUDO tee "$SSD_WATCH_CONF" >/dev/null <<'LLMPMCIE_RULES'
 // llmsysmon — SSD write-latency watchdog (managed by scripts/install.sh)
@@ -247,11 +327,12 @@ LLMPMCIE_RULES
     $SUDO chmod 0644 "$SSD_WATCH_CONF"
     ok "rules written to $SSD_WATCH_CONF"
   fi
+  json_evt "rules" "ok" "$SSD_WATCH_CONF"
 
-  # 7) syntax validation with the real engine
+  # 8) syntax validation with the real engine
   say "validating rules with pmie -C"
   if [ "$DRY_RUN" = 1 ]; then
-    printf '[dry-run] pmie -C -c %s\n' "$SSD_WATCH_CONF"
+    dry_run_trace "pmie -C -c $SSD_WATCH_CONF"
   elif command -v pmie >/dev/null 2>&1; then
     if pmie -C -c "$SSD_WATCH_CONF" >/dev/null 2>&1; then
       ok "pmie accepted the rule block"
@@ -261,11 +342,12 @@ LLMPMCIE_RULES
   else
     warn "pmie binary missing — skipping syntax validation"
   fi
+  json_evt "validate" "ok" "pmie -C"
 
-  # 8) dedicated pmie instance registration
+  # 9) dedicated pmie instance registration
   say "registering dedicated pmie instance"
   if [ "$DRY_RUN" = 1 ]; then
-    printf '[dry-run] mkdir -p %s; write %s/llmsysmon\n' "$PMIE_CONTROL_D" "$PMIE_CONTROL_D"
+    dry_run_trace "mkdir -p $PMIE_CONTROL_D; write $PMIE_CONTROL_D/llmsysmon"
   else
     $SUDO mkdir -p "$PMIE_CONTROL_D"
     $SUDO tee "$PMIE_CONTROL_D/llmsysmon" >/dev/null <<'LLMPMCIE_CONTROL'
@@ -278,8 +360,9 @@ LLMPMCIE_CONTROL
     $SUDO chmod 0644 "$PMIE_CONTROL_D/llmsysmon"
     ok "instance registered in $PMIE_CONTROL_D/llmsysmon"
   fi
+  json_evt "instance" "ok" "$PMIE_CONTROL_D/llmsysmon"
 
-  # 9) systemd wiring: pmcd, pmlogger, pmie + instance watchdog timer
+  # 10) systemd wiring: pmcd, pmlogger, pmie + instance watchdog timer
   for svc in pmcd pmlogger pmie; do
     if systemctl is-active --quiet "$svc" 2>/dev/null; then
       say "$svc already active — ensuring enabled"
@@ -296,14 +379,15 @@ LLMPMCIE_CONTROL
   else
     warn "pmie_check.timer unit missing — instance restarts rely on system rc"
   fi
+  json_evt "services" "ok" "pmcd,pmlogger,pmie"
 
-  # 10) start the instance now
+  # 11) start the instance now
   local pmie_check_bin
   pmie_check_bin="$(command -v pmie_check 2>/dev/null || true)"
   [ -n "$pmie_check_bin" ] || pmie_check_bin='/usr/lib/pcp/bin/pmie_check'
   if [ "$DRY_RUN" = 1 ]; then
     local pmie_check_cmd="${SUDO:+$SUDO }pmie_check"
-    printf '[dry-run] %s (starts ssd_watch instance)\n' "$pmie_check_cmd"
+    dry_run_trace "$pmie_check_cmd (starts ssd_watch instance)"
   elif [ -x "$pmie_check_bin" ]; then
     say "starting pmie instances via pmie_check"
     run $SUDO "$pmie_check_bin" || warn "pmie_check exited non-zero (see /var/log/pcp/pmie/pmie_check.log)"
@@ -317,10 +401,10 @@ LLMPMCIE_CONTROL
     warn "pmie_check not found — reinstall the pcp package"
   fi
 
-  # 11) install the /pmie binary command hook (path command, works in any shell)
+  # 12) install the /pmie binary command hook (path command, works in any shell)
   say "installing /pmie binary command hook"
   if [ "$DRY_RUN" = 1 ]; then
-    printf '[dry-run] write /pmie wrapper (exec pmie -v -t 1.5 -c %s)\n' "$SSD_WATCH_CONF"
+    dry_run_trace "write /pmie wrapper (exec pmie -v -t 1.5 -c $SSD_WATCH_CONF)"
   else
     $SUDO tee /pmie >/dev/null <<'LLMPMCIE_HOOK'
 #!/bin/sh
@@ -330,14 +414,16 @@ LLMPMCIE_HOOK
     $SUDO chmod 0755 /pmie
     ok "/pmie binary hook installed"
   fi
+  json_evt "hook" "ok" "/pmie"
 
-  # 12) persistent /pmie alias in the detected shell profile
+  # 13) persistent /pmie alias in the detected shell profile
   if alias_present "$rc_file"; then
     ok "alias /pmie already present in $rc_file"
+    json_evt "alias" "already" "$rc_file"
   else
     say "appending /pmie alias to $rc_file"
     if [ "$DRY_RUN" = 1 ]; then
-      printf '[dry-run] append to %s: %s\n' "$rc_file" "$(gen_alias_line)"
+      dry_run_trace "append to $rc_file: $(gen_alias_line)"
     else
       {
         printf '\n# llmsysmon — instant SSD latency trace (managed by scripts/install.sh)\n'
@@ -345,15 +431,17 @@ LLMPMCIE_HOOK
       } >> "$rc_file" || die "could not write $rc_file"
       ok "alias installed — reload with: source $rc_file"
     fi
+    json_evt "alias" "ok" "$rc_file"
   fi
 
-  # 13) summary
+  # 14) summary
   say "------------------------------------------------------------"
   say "llmsysmon setup complete"
   say "  live trace: /pmie   (pmie -v -t 1.5 -c $SSD_WATCH_CONF)"
   say "  rules:      $SSD_WATCH_CONF"
   say "  alerts:     /var/log/pcp/pmie/$(hostname)/ssd_watch.log"
   [ "$DRY_RUN" = 1 ] && say "dry-run: nothing was changed"
+  json_evt "done" "ok" "llmsysmon setup complete"
 }
 
-main "${1:-}"
+main "$@"
