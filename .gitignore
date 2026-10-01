@@ -1,0 +1,16 @@
+# Node / JS tooling (never track dependency trees)
+node_modules/
+
+# Local test logs and scratch artifacts
+*.log
+logs/
+test-results/
+coverage/
+
+# System telemetry outputs (PCP runtime data lives outside the repo)
+var/log/pcp/
+
+# Editor / OS noise
+.DS_Store
+*.swp
+*.swo
