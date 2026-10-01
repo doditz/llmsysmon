@@ -15,6 +15,19 @@ tells you (and your AI agents) the moment your drive starts to struggle.
 no shell knowledge needed. The terminal tools below (`/pmie` and friends) are optional
 shortcuts for when you're already in a shell.
 
+### Slash command flags
+
+| flag | what it does |
+|---|---|
+| (no flags) | live report |
+| `--help` | show usage and exit |
+| `--detach` | open heartbeat in a small dedicated terminal window |
+| `--detach-gui` | open the pmchart graph window |
+| `--json` | live report as a single JSON object |
+| `--config` | print current config as JSON |
+| `--config set tquery 5` | change live sampling from 1.5 s to 5 s |
+| `--config get tquery` | print the current `tquery` value |
+
 ## The problem, in plain words
 
 SSDs usually fail *slowly first*: tiny, repeated stutters before the real trouble.
