@@ -1,10 +1,10 @@
 ---
-name: llmpmcie
+name: llmsysmon
 description: Automated local telemetry engine for tracking SSD latency and write stress thresholds using PCP pmie.
 ---
 # llmpmcie Instructions
 
-`llmpmcie` is a native, zero-dependency telemetry skill for Linux hosts. It installs
+`llmsysmon` is a native, zero-dependency telemetry skill for Linux hosts. It installs
 and wires Performance Co-Pilot's `pmie` inference daemon to watch SSD/disk storage
 latency in real time: rules poll every 1.5 seconds and raise print + syslog alarms
 when the active write (or total) queue sustains an average wait above 80 ms for
