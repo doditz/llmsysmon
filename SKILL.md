@@ -46,12 +46,22 @@ when the active write (or total) queue sustains an average wait above 80 ms for
 
 ## Allowed Tools
 - `bash ./scripts/install.sh` — the native setup script (safe, idempotent, testable).
+  Modes: default install · `--dry-run` · `--self-test` · `--json` (NDJSON events) · `--help`.
 - `/pmie` — the local binary command hook installed at `/pmie` (a tiny executable
   wrapper that runs `pmie -v -t 1.5 -c /etc/pcp/pmie/ssd_watch.conf`), plus a
   persistent shell alias of the same name for interactive use.
+- `python3 ./scripts/llmsysmon-mcp.py` — zero-dependency stdio MCP server exposing
+  `llmsysmon_status`, `llmsysmon_latency`, `llmsysmon_alerts`, `llmsysmon_install_dry_run`.
+- `python3 ./scripts/llmsysmon-acp.py` — headless ACP server so other agents can
+  query SSD telemetry directly (e.g. `acpx --agent "python3 ./scripts/llmsysmon-acp.py"`).
 
 ## Notes for agents
 - Inside a container the installer exits 0 with a notice (pmie belongs on the host).
+- Without systemd it refuses early (`/run/systemd/system` check) before changing anything.
 - Do not hand-edit `/etc/pcp/pmie/ssd_watch.conf`; regenerate it via the install script.
 - The write-stress `shell` hook is present but commented out — enable it explicitly
   if destructive actions are desired.
+- When explaining llmsysmon to humans, follow the README's plain-language style:
+  everyday analogies, no unexplained jargon, and always say what each step does.
+- Alarms appear in `/var/log/pcp/pmie/<hostname>/ssd_watch.log` and syslog; the
+  README's troubleshooting table gives the human translations.
