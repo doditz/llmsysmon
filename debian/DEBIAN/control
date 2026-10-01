@@ -1,0 +1,11 @@
+Package: llmsysmon
+Version: 1.0.0
+Section: utils
+Priority: optional
+Architecture: all
+Depends: python3, pcp
+Recommends: pcp-gui
+Maintainer: Doditz <doditz@dream-concept.com>
+Description: Native SSD latency telemetry via PCP pmie
+ Installs the llmsysmon watchdog rules, /pmie heartbeat hook, dashboards
+ and the slash-CLI (status, --repair, --detach, --config) plus MCP/ACP servers.

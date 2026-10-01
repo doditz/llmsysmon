@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "llmsysmon"
+version = "1.0.0"
+description = "Native SSD latency telemetry skill: PCP pmie watchdog, /pmie heartbeat, slash-CLI with --repair, MCP+ACP servers"
+readme = "README.md"
+requires-python = ">=3.8"
+license = {text = "MIT"}
+
+[project.scripts]
+llmsysmon = "llmsysmon_cli:main"
+
+[tool.setuptools]
+py-modules = ["llmsysmon_cli"]

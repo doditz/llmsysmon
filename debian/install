@@ -1,0 +1,6 @@
+debian/llmsysmon-cli.py usr/share/llmsysmon/cli.py
+scripts/install.sh       usr/share/llmsysmon/
+scripts/llmsysmon-mcp.py usr/share/llmsysmon/
+scripts/llmsysmon-acp.py usr/share/llmsysmon/
+references/llmsysmon-dashboard.pmchart etc/pcp/llmsysmon/
+debian/bin/llmsysmon     usr/bin/

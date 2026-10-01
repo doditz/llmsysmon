@@ -43,13 +43,19 @@ row** (that's ~4.5 seconds of sustained pain), it raises the alarm.
 ## Install (2 commands, ~1 minute)
 
 ```bash
-npx skills add doditz/llmsysmon   # step 1: download the skill (like getting an app)
+curl -fsSL https://raw.githubusercontent.com/doditz/llmsysmon/main/scripts/install.sh | bash
 bash scripts/install.sh           # step 2: set it up (like the app's installer)
 ```
 
 Step 2 will ask for your password (`sudo`) — that's normal: it installs the
 open-source PCP monitoring toolkit and registers a small watchdog. It prints every
 single thing it does, in green ✓, so you're never wondering what's happening:
+
+### Distributions
+
+- **npm** — `npx llmsysmon --help` (coming to the registries)
+- **PyPI** — `pip install llmsysmon` (coming to the registries)
+- **apt** — download the `.deb` and run `sudo apt install ./llmsysmon_1.0.0_all.deb` (coming to the registries)
 
 ![install.sh dry-run — every step explained in color](assets/install-dry-run.png)
 

@@ -1,0 +1,29 @@
+{
+  "name": "llmsysmon",
+  "version": "1.0.0",
+  "description": "Native SSD latency telemetry skill — PCP pmie watchdog, /pmie heartbeat, MCP+ACP servers, slash-CLI",
+  "bin": {
+    "llmsysmon": "bin/llmsysmon"
+  },
+  "files": [
+    "bin/",
+    "scripts/",
+    "llmsysmon_cli.py",
+    "references/",
+    "assets/",
+    "SKILL.md",
+    "README.md"
+  ],
+  "license": "MIT",
+  "keywords": [
+    "pcp",
+    "pmie",
+    "ssd",
+    "latency",
+    "telemetry",
+    "monitoring",
+    "skill",
+    "mcp",
+    "acp"
+  ]
+}

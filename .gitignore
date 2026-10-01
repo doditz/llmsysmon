@@ -14,3 +14,12 @@ var/log/pcp/
 .DS_Store
 *.swp
 *.swo
+
+# Packaging build artifacts
+*.tgz
+*.deb
+*.egg-info/
+build/
+dist/
+__pycache__/
+*.whl
