@@ -4,8 +4,10 @@
 import glob
 import json
 import os
+import shutil
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -27,6 +29,7 @@ Flags:
   --detach             exec /pmie --detach (fallback direct heartbeat if /pmie missing)
   --detach-gui         exec /pmie --detach-gui (pmchart dashboard; error if /pmie missing)
   --json               live report as JSON
+  --repair             audit and auto-fix paths, perms, deps, versions, rules
   --config             print current config as JSON
   --config set <key> <value>   persist config key
   --config get <key>           print single config value
@@ -412,6 +415,397 @@ def cmd_detach(gui=False):
     return 1
 
 
+# --- repair implementation ----------------------------------------------------
+
+SSD_WATCH_CONF = Path("/etc/pcp/pmie/ssd_watch.conf")
+PMIE_CONTROL_D = Path("/etc/pcp/pmie/control.d")
+PMIE_CONTROL_FILE = PMIE_CONTROL_D / "llmsysmon"
+PMIE_HOOK = Path("/pmie")
+
+RULE_TEMPLATE = """// llmsysmon — SSD write-latency watchdog (managed by scripts/install.sh)
+// Polls every 1.5 s. Alarms when the active write (or total) queue sustains an
+// average service+wait time above 80 ms for 3 consecutive samples.
+// Math: delta(write_rawactive[ms]) / delta(write[count]) = average wait [ms].
+delta = 1.5 sec;
+
+some_inst (
+    all_sample ( disk.dev.write_rawactive @0..2 / disk.dev.write @0..2 > 80 msec )
+) -> print "[llmsysmon] ALARM write-await device=%i threshold=80ms sustained=3x1.5s" &
+     syslog "llmsysmon ALARM write-await device=%i threshold=80ms sustained=3x1.5s";
+
+some_inst (
+    all_sample ( disk.dev.total_rawactive @0..2 / disk.dev.total @0..2 > 80 msec )
+) -> print "[llmsysmon] ALARM total-await device=%i threshold=80ms sustained=3x1.5s" &
+     syslog "llmsysmon ALARM total-await device=%i threshold=80ms sustained=3x1.5s";
+
+// Active write-stress hook (disabled by default — uncomment to enable):
+// some_inst (
+//     all_sample ( disk.dev.write_rawactive @0..2 / disk.dev.write @0..2 > 80 msec )
+// ) -> shell 10 min "logger -t llmsysmon 'write-stress hook fired on %i'";
+"""
+
+CONTROL_TEMPLATE = """$version=1.1
+
+# llmsysmon SSD latency watchdog — managed by llmsysmon scripts/install.sh
+#Host          P?  S?  Log File                                        Arguments
+LOCALHOSTNAME   n   n   PCP_LOG_DIR/pmie/LOCALHOSTNAME/ssd_watch.log   -c /etc/pcp/pmie/ssd_watch.conf
+"""
+
+HOOK_TEMPLATE = """#!/bin/sh
+# llmsysmon — instant SSD latency heartbeat (managed by scripts/install.sh)
+case "${1:-}" in
+  --detach)
+    if command -v x-terminal-emulator >/dev/null 2>&1; then
+      setsid x-terminal-emulator -T "llmsysmon — live heartbeat" -e /pmie >/dev/null 2>&1 &
+      echo "llmsysmon dashboard opening in a new terminal window…"
+    else
+      echo "no x-terminal-emulator found — running here instead" >&2
+      exec /pmie
+    fi
+    exit 0 ;;
+  --detach-gui)
+    if command -v pmchart >/dev/null 2>&1; then
+      if command -v gsettings >/dev/null 2>&1; then
+        SCHEME=$(gsettings get org.gnome.desktop.interface color-scheme 2>/dev/null || printf "'default'")
+        PREFS_DIR="$HOME/.config/PCP"
+        PREFS="$PREFS_DIR/pmchart.conf"
+        case "$SCHEME" in
+          *dark*)
+            mkdir -p "$PREFS_DIR"
+            if ! grep -q 'chartBackgroundColor' "$PREFS" 2>/dev/null; then
+              printf '[pmchart]\\nchartBackgroundColor=#171720\\n' >> "$PREFS"
+            fi
+            ;;
+        esac
+      fi
+      QT_QPA_PLATFORMTHEME=gtk3 DRI_PRIME=1 setsid pmchart \\
+        -c /etc/pcp/llmsysmon/dashboard.pmchart -t 1.5s >/dev/null 2>&1 &
+      echo "llmsysmon pmchart dashboard opening (desktop theme, dGPU)…"
+    else
+      echo "pmchart missing (needs pcp-gui) — falling back to terminal heartbeat" >&2
+      exec /pmie
+    fi
+    exit 0 ;;
+esac
+pmie -v -t 1.5 -c /etc/pcp/pmie/ssd_watch.conf 2>/dev/null | awk '
+/expr_1:/ { w=$0; sub(/^.*expr_1: */,"",w); next }
+/expr_2:/ { t=$0; sub(/^.*expr_2: */,"",t);
+            ws = (w=="true") ? "🚨 ALARM" : (w=="false" ? "ok      " : "warming…");
+            ts = (t=="true") ? "🚨 ALARM" : (t=="false" ? "ok      " : "warming…");
+            printf "  write queue %-10s   total queue %-10s\\n", ws, ts; fflush(); next }
+/\\[llmsysmon\\] ALARM/ { printf "  🚨 %s\\n", $0; fflush() }
+'
+"""
+
+ALIAS_MARKER = "# llmsysmon — /pmie alias (managed by scripts/install.sh)"
+ALIAS_LINE = "alias /pmie='command /pmie'"
+
+
+def _repair_print(status, item, detail=""):
+    if detail:
+        print(f"  {status} {item} — {detail}")
+    else:
+        print(f"  {status} {item}")
+
+
+def _read_rule_template_from_install_sh():
+    install_sh = Path(__file__).with_name("install.sh")
+    if not install_sh.exists():
+        return None
+    try:
+        text = install_sh.read_text(encoding="utf-8")
+    except Exception:
+        return None
+    start = text.find("$SUDO tee \"$SSD_WATCH_CONF\" >/dev/null <<'LLMPMCIE_RULES'")
+    if start == -1:
+        start = text.find("<<'LLMPMCIE_RULES'")
+    if start == -1:
+        return None
+    content_start = text.find("\n", start) + 1
+    end = text.find("\nLLMPMCIE_RULES", content_start)
+    if end == -1:
+        return None
+    return text[content_start:end] + "\n"
+
+
+def _detect_os_family():
+    path = Path("/etc/os-release")
+    if not path.exists():
+        return None
+    try:
+        data = path.read_text(encoding="utf-8")
+    except Exception:
+        return None
+    id_val = ""
+    id_like = ""
+    for line in data.splitlines():
+        if line.startswith("ID="):
+            id_val = line.split("=", 1)[1].strip().strip('"').lower()
+        elif line.startswith("ID_LIKE="):
+            id_like = line.split("=", 1)[1].strip().strip('"').lower()
+    combined = f"{id_val} {id_like}"
+    if "debian" in combined or "ubuntu" in combined:
+        return "debian"
+    if "rhel" in combined or "fedora" in combined or "centos" in combined or "almalinux" in combined or "rocky" in combined:
+        return "rhel"
+    return None
+
+
+def _which(cmd):
+    return shutil.which(cmd)
+
+
+def _has_dpkg_package(pkg):
+    proc = _run(["dpkg", "-s", pkg], timeout=5)
+    return proc.returncode == 0 and "Status: install ok installed" in proc.stdout
+
+
+def _has_rpm_package(pkg):
+    proc = _run(["rpm", "-q", pkg], timeout=5)
+    return proc.returncode == 0
+
+
+def _pmie_version():
+    proc = _run(["pmie", "--version"], timeout=5)
+    if proc.returncode == 0:
+        return proc.stdout.strip().splitlines()[0].strip()
+    family = _detect_os_family()
+    if family == "debian":
+        proc = _run(["dpkg", "-s", "pcp"], timeout=5)
+        if proc.returncode == 0:
+            for line in proc.stdout.splitlines():
+                if line.startswith("Version:"):
+                    return line.split(":", 1)[1].strip()
+    elif family == "rhel":
+        proc = _run(["rpm", "-q", "pcp"], timeout=5)
+        if proc.returncode == 0:
+            return proc.stdout.strip().splitlines()[0].strip()
+    return None
+
+
+def _detect_shell_rc():
+    shell = os.environ.get("SHELL", "/bin/bash")
+    name = os.path.basename(shell)
+    if name == "zsh":
+        return Path.home() / ".zshrc"
+    return Path.home() / ".bashrc"
+
+
+def _alias_present(rc_file):
+    if not rc_file.exists():
+        return False
+    try:
+        return ALIAS_LINE in rc_file.read_text(encoding="utf-8")
+    except Exception:
+        return False
+
+
+def _write_temp_file(content, suffix):
+    tmp = Path(tempfile.mkstemp(suffix=suffix)[1])
+    tmp.write_text(content, encoding="utf-8")
+    return tmp
+
+
+def cmd_repair():
+    needs_attention = 0
+
+    # 1) PATH: /etc/pcp/pmie/ssd_watch.conf
+    rule_ok = False
+    if SSD_WATCH_CONF.exists():
+        try:
+            with open(SSD_WATCH_CONF, "r", encoding="utf-8") as fh:
+                data = fh.read()
+            if data.strip():
+                proc = _run(["pmie", "-C", "-c", str(SSD_WATCH_CONF)], timeout=10)
+                if proc.returncode == 0:
+                    rule_ok = True
+                    _repair_print("✓ ok", "rule file", f"{SSD_WATCH_CONF} exists and parses")
+                else:
+                    _repair_print("✗ cannot fix", "rule file", f"{SSD_WATCH_CONF} exists but pmie -C fails; manual inspection needed")
+                    needs_attention += 1
+            else:
+                _repair_print("✗ cannot fix", "rule file", f"{SSD_WATCH_CONF} is empty; manual inspection needed")
+                needs_attention += 1
+        except Exception as exc:
+            _repair_print("✗ cannot fix", "rule file", f"cannot read {SSD_WATCH_CONF}: {exc}")
+            needs_attention += 1
+    else:
+        template = _read_rule_template_from_install_sh() or RULE_TEMPLATE
+        tmp = _write_temp_file(template, ".conf")
+        proc = _run(["pmie", "-C", "-c", str(tmp)], timeout=10)
+        tmp.unlink(missing_ok=True)
+        if proc.returncode == 0:
+            _repair_print("✗ needs sudo", "rule file", f"regenerated template; run: sudo install -m 0644 <tmp> {SSD_WATCH_CONF}")
+        else:
+            _repair_print("✗ needs sudo", "rule file", f"template generated; run: sudo install -m 0644 <tmp> {SSD_WATCH_CONF}")
+        needs_attention += 1
+
+    # 2) PATH: /etc/pcp/pmie/control.d/llmsysmon
+    if PMIE_CONTROL_FILE.exists():
+        _repair_print("✓ ok", "control.d entry", f"{PMIE_CONTROL_FILE} exists")
+    else:
+        _repair_print("✗ needs sudo", "control.d entry", f"run: sudo mkdir -p {PMIE_CONTROL_D} && sudo tee {PMIE_CONTROL_FILE} <<'EOF'\n{CONTROL_TEMPLATE}EOF\nsudo chmod 0644 {PMIE_CONTROL_FILE}")
+        needs_attention += 1
+
+    # 3) PATH: /pmie hook
+    if PMIE_HOOK.exists():
+        if os.access(PMIE_HOOK, os.X_OK):
+            _repair_print("✓ ok", "/pmie hook", "exists and executable")
+        else:
+            _repair_print("✗ needs sudo", "/pmie hook", f"exists but not executable; run: sudo chmod 0755 {PMIE_HOOK}")
+            needs_attention += 1
+    else:
+        _repair_print("✗ needs sudo", "/pmie hook", f"run: sudo tee {PMIE_HOOK} <<'EOF'\n{HOOK_TEMPLATE}EOF\nsudo chmod 0755 {PMIE_HOOK}")
+        needs_attention += 1
+
+    # 4) PATH: ~/.config/llmsysmon/config.json
+    cfg = load_config()
+    cfg_valid = True
+    try:
+        if CONFIG_PATH.exists():
+            with open(CONFIG_PATH, "r", encoding="utf-8") as fh:
+                raw = json.load(fh)
+            if not isinstance(raw, dict):
+                cfg_valid = False
+            else:
+                for key, validator in VALIDATORS.items():
+                    if key in raw and not validator(raw[key]):
+                        cfg_valid = False
+                        break
+        else:
+            cfg_valid = False
+    except Exception:
+        cfg_valid = False
+
+    if cfg_valid:
+        _repair_print("✓ ok", "config", f"{CONFIG_PATH} valid")
+    else:
+        save_config(dict(DEFAULT_CONFIG))
+        _repair_print("✗ fixed", "config", f"wrote defaults to {CONFIG_PATH}")
+
+    # 5) PERM: ssd_watch.conf mode 0644, control.d entry 0644, /pmie 0755
+    for path, expected_mode, label in [
+        (SSD_WATCH_CONF, 0o644, "rule file mode"),
+        (PMIE_CONTROL_FILE, 0o644, "control.d entry mode"),
+        (PMIE_HOOK, 0o755, "/pmie mode"),
+    ]:
+        if not path.exists():
+            continue
+        try:
+            actual = path.stat().st_mode & 0o777
+            if actual == expected_mode:
+                _repair_print("✓ ok", label, f"{path} {oct(expected_mode)[2:]}")
+            else:
+                _repair_print("✗ needs sudo", label, f"{path} is {oct(actual)[2:]}; run: sudo chmod {oct(expected_mode)[2:]} {path}")
+                needs_attention += 1
+        except Exception as exc:
+            _repair_print("✗ cannot fix", label, f"cannot stat {path}: {exc}")
+            needs_attention += 1
+
+    # 6) DEP: distro detection -> dpkg/rpm presence of pcp; pmie+pminfo in PATH; systemd; pmcd reachable
+    family = _detect_os_family()
+    if family is None:
+        _repair_print("✗ cannot fix", "distro", "unsupported OS family in /etc/os-release")
+        needs_attention += 1
+    else:
+        _repair_print("✓ ok", "distro", f"{family} family detected")
+
+    pcp_present = False
+    if family == "debian":
+        pcp_present = _has_dpkg_package("pcp")
+    elif family == "rhel":
+        pcp_present = _has_rpm_package("pcp")
+    else:
+        pcp_present = _which("pmie") is not None and _which("pminfo") is not None
+
+    if pcp_present:
+        _repair_print("✓ ok", "pcp package", "pcp installed")
+    else:
+        if family == "debian":
+            if _which("aptitude"):
+                cmd = "sudo aptitude update && sudo aptitude -y install pcp pcp-gui"
+            else:
+                cmd = "sudo apt-get update && sudo apt-get -y install pcp pcp-gui"
+        elif family == "rhel":
+            cmd = "sudo dnf -y install pcp pcp-gui"
+        else:
+            cmd = "sudo <package-manager> install pcp pcp-gui"
+        _repair_print("✗ needs sudo", "pcp package", f"run: {cmd}")
+        needs_attention += 1
+
+    # pcp-gui optional warn
+    if family == "debian":
+        gui_present = _has_dpkg_package("pcp-gui")
+    elif family == "rhel":
+        gui_present = _has_rpm_package("pcp-gui")
+    else:
+        gui_present = _which("pmchart") is not None
+    if gui_present:
+        _repair_print("✓ ok", "pcp-gui", "pmchart available")
+    else:
+        _repair_print("✓ ok", "pcp-gui", "pmchart missing — optional GUI only")
+
+    pmie_bin = _which("pmie")
+    pminfo_bin = _which("pminfo")
+    if pmie_bin and pminfo_bin:
+        _repair_print("✓ ok", "binaries", f"pmie={pmie_bin}, pminfo={pminfo_bin}")
+    else:
+        missing = []
+        if not pmie_bin:
+            missing.append("pmie")
+        if not pminfo_bin:
+            missing.append("pminfo")
+        _repair_print("✗ needs sudo", "binaries", f"missing {', '.join(missing)} — install pcp package")
+        needs_attention += 1
+
+    if Path("/run/systemd/system").is_dir():
+        _repair_print("✓ ok", "systemd", "/run/systemd/system present")
+    else:
+        _repair_print("✗ cannot fix", "systemd", "/run/systemd/system missing — llmsysmon requires systemd")
+        needs_attention += 1
+
+    if pmcd_reachable():
+        _repair_print("✓ ok", "pmcd", "reachable via pminfo -f disk.dev.write")
+    else:
+        _repair_print("✗ needs sudo", "pmcd", "run: sudo systemctl start pmcd")
+        needs_attention += 1
+
+    # 7) VER: pmie version; pmie -C parse check
+    version = _pmie_version()
+    if version:
+        _repair_print("✓ ok", "pmie version", version)
+    else:
+        _repair_print("✗ cannot fix", "pmie version", "pmie --version and package queries failed")
+        needs_attention += 1
+
+    if SSD_WATCH_CONF.exists():
+        proc = _run(["pmie", "-C", "-c", str(SSD_WATCH_CONF)], timeout=10)
+        if proc.returncode == 0:
+            _repair_print("✓ ok", "rule parse", "pmie -C accepted ssd_watch.conf")
+        else:
+            _repair_print("✗ cannot fix", "rule parse", f"pmie -C rejected {SSD_WATCH_CONF}")
+            needs_attention += 1
+
+    # 8) ALIAS: /pmie alias present in detected shell rc
+    rc_file = _detect_shell_rc()
+    if _alias_present(rc_file):
+        _repair_print("✓ ok", "alias", f"/pmie alias present in {rc_file}")
+    else:
+        try:
+            with open(rc_file, "a", encoding="utf-8") as fh:
+                fh.write(f"\n{ALIAS_MARKER}\n{ALIAS_LINE}\n")
+            _repair_print("✗ fixed", "alias", f"appended to {rc_file}")
+        except Exception as exc:
+            _repair_print("✗ cannot fix", "alias", f"cannot write {rc_file}: {exc}")
+            needs_attention += 1
+
+    if needs_attention == 0:
+        print("REPAIR: all clean")
+        return 0
+    print(f"REPAIR: {needs_attention} item(s) need attention")
+    return 1
+
+
 def cmd_report(cfg, json_mode=False):
     report = build_report(cfg)
     if json_mode:
@@ -468,6 +862,12 @@ def main(argv=None):
             print("Unknown arguments with --detach-gui", file=sys.stderr)
             return 1
         return cmd_detach(gui=True)
+
+    if argv[0] == "--repair":
+        if len(argv) != 1:
+            print("Unknown arguments with --repair", file=sys.stderr)
+            return 1
+        return cmd_repair()
 
     print(f"Unknown flag: {argv[0]}", file=sys.stderr)
     return 1
