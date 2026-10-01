@@ -202,6 +202,31 @@ run_selftest() {
     pass "has_systemd returns false when directory missing"
   fi
 
+  # dashboard detach branches present in hook heredoc
+  local hook_heredoc
+  hook_heredoc="$(sed -n '/^#!\/bin\/sh$/,/^LLMPMCIE_HOOK$/p' "$0" | head -n -1)"
+  for token in '--detach)' 'QT_QPA_PLATFORMTHEME=gtk3' 'DRI_PRIME=1' 'x-terminal-emulator -T'; do
+    if printf '%s' "$hook_heredoc" | command grep -qF -- "$token"; then
+      pass "hook contains $token"
+    else
+      fail "hook missing $token"
+    fi
+  done
+
+  # dashboard view file exists with expected schema
+  local view_src
+  view_src="$(dirname "$0")/../references/llmsysmon-dashboard.pmchart"
+  if [ -r "$view_src" ]; then
+    pass "dashboard view file exists"
+    if grep -qF 'disk.dev.w_await' "$view_src" && grep -qF 'global width 860 height 480' "$view_src"; then
+      pass "dashboard view contains w_await and global geometry"
+    else
+      fail "dashboard view missing w_await or global geometry"
+    fi
+  else
+    fail "dashboard view file not found at $view_src"
+  fi
+
   rm -rf "$tmp"
   if [ "$fails" -eq 0 ]; then echo "SELF-TEST: all PASS"; exit 0; else echo "SELF-TEST: $fails FAIL"; exit 1; fi
 }
@@ -456,6 +481,27 @@ LLMPMCIE_CONTROL
     $SUDO tee /pmie >/dev/null <<'LLMPMCIE_HOOK'
 #!/bin/sh
 # llmsysmon — instant SSD latency heartbeat (managed by scripts/install.sh)
+case "${1:-}" in
+  --detach)
+    if command -v x-terminal-emulator >/dev/null 2>&1; then
+      setsid x-terminal-emulator -T "llmsysmon — live heartbeat" -e /pmie >/dev/null 2>&1 &
+      echo "llmsysmon dashboard opening in a new terminal window…"
+    else
+      echo "no x-terminal-emulator found — running here instead" >&2
+      exec /pmie
+    fi
+    exit 0 ;;
+  --detach-gui)
+    if command -v pmchart >/dev/null 2>&1; then
+      QT_QPA_PLATFORMTHEME=gtk3 DRI_PRIME=1 setsid pmchart \
+        -c /etc/pcp/llmsysmon/dashboard.pmchart -t 1.5s >/dev/null 2>&1 &
+      echo "llmsysmon pmchart dashboard opening (desktop theme, dGPU)…"
+    else
+      echo "pmchart missing (needs pcp-gui) — falling back to terminal heartbeat" >&2
+      exec /pmie
+    fi
+    exit 0 ;;
+esac
 pmie -v -t 1.5 -c /etc/pcp/pmie/ssd_watch.conf 2>/dev/null | awk '
 /expr_1:/ { w=$0; sub(/^.*expr_1: */,"",w); next }
 /expr_2:/ { t=$0; sub(/^.*expr_2: */,"",t);
@@ -470,7 +516,24 @@ LLMPMCIE_HOOK
   fi
   json_evt "hook" "ok" "/pmie"
 
-  # 13) persistent /pmie alias in the detected shell profile
+  # 13) install the pmchart dashboard view
+  sec "Dashboard view"
+  say "installing dashboard view"
+  if [ "$DRY_RUN" = 1 ]; then
+    dry_run_trace "install -m 0644 references/llmsysmon-dashboard.pmchart /etc/pcp/llmsysmon/dashboard.pmchart"
+  else
+    VIEW_SRC="$(dirname "$0")/../references/llmsysmon-dashboard.pmchart"
+    if [ -r "$VIEW_SRC" ]; then
+      $SUDO mkdir -p /etc/pcp/llmsysmon
+      $SUDO install -m 0644 "$VIEW_SRC" /etc/pcp/llmsysmon/dashboard.pmchart
+      ok "dashboard view installed"
+    else
+      warn "dashboard view file not found next to the script — skipping"
+    fi
+  fi
+  json_evt "dashboard" "ok" "/etc/pcp/llmsysmon/dashboard.pmchart"
+
+  # 14) persistent /pmie alias in the detected shell profile
   if alias_present "$rc_file"; then
     ok "alias /pmie already present in $rc_file"
     json_evt "alias" "already" "$rc_file"
@@ -488,7 +551,7 @@ LLMPMCIE_HOOK
     json_evt "alias" "ok" "$rc_file"
   fi
 
-  # 14) summary
+  # 15) summary
   if [ "${JSON_MODE:-0}" = 0 ]; then
     [ "$DRY_RUN" = 1 ] && say "dry-run: nothing was changed"
     card

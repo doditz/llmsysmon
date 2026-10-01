@@ -60,6 +60,20 @@ drive crosses the line, the alarm fires and you see exactly which device and why
 Alarms are also written to the system log and to
 `/var/log/pcp/pmie/<your-computer-name>/ssd_watch.log`, so they're never lost.
 
+## Live dashboards
+
+The same heartbeat comes in three flavors. You choose which one to open — nothing
+pops up automatically.
+
+- `/pmie` — the default, in-terminal heartbeat. Best for quick checks inside the
+  terminal you're already using.
+- `/pmie --detach` — opens the heartbeat in a small dedicated terminal window,
+  so your main terminal stays free.
+- `/pmie --detach-gui` — opens a graph window with line charts for write await
+  and total await per disk. It follows your desktop dark/light theme and prefers
+  the discrete GPU (`DRI_PRIME=1`) for smooth rendering. Requires `pcp-gui`,
+  which the installer already installs.
+
 ## What just happened on my machine? (no jargon)
 
 | The installer did… | …which means, in plain words |

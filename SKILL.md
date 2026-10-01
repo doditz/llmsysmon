@@ -29,9 +29,11 @@ when the active write (or total) queue sustains an average wait above 80 ms for
    - `--self-test` runs the embedded unit tests (no system changes).
 2. After install, evaluate live traces on demand:
    ```bash
-   /pmie
+   /pmie                 # in-terminal heartbeat
+   /pmie --detach        # small dedicated terminal window
+   /pmie --detach-gui    # pmchart graph window (needs pcp-gui)
    ```
-   (equivalent: `pmie -v -t 1.5 -c /etc/pcp/pmie/ssd_watch.conf`)
+   (default equivalent: `pmie -v -t 1.5 -c /etc/pcp/pmie/ssd_watch.conf`)
 3. Alerts appear in the pmie activity log
    (`/var/log/pcp/pmie/<hostname>/ssd_watch.log`) and in the system log.
 
@@ -54,6 +56,18 @@ when the active write (or total) queue sustains an average wait above 80 ms for
   `llmsysmon_status`, `llmsysmon_latency`, `llmsysmon_alerts`, `llmsysmon_install_dry_run`.
 - `python3 ./scripts/llmsysmon-acp.py` — headless ACP server so other agents can
   query SSD telemetry directly (e.g. `acpx --agent "python3 ./scripts/llmsysmon-acp.py"`).
+
+## Reporting to humans
+When a user or agent asks for a status report (e.g. invoked as /llmsysmon), render a clean,
+reader-friendly report: (a) one-line headline status (OK / WARNING / ALARM) with an emoji;
+(b) a compact table of devices (device | write await | total await | state) — never dump raw
+tool output; (c) use color/bold ONLY for state emphasis (green ok, yellow warn, red alarm);
+(d) keep it under ~20 lines; offer the deep-dive commands (pmie -v, ssd_watch.log) as follow-ups.
+
+## Live dashboards
+- `/pmie` — terminal heartbeat.
+- `/pmie --detach` — opens a small dedicated terminal window with the heartbeat.
+- `/pmie --detach-gui` — opens the pmchart GUI dashboard (follows your desktop theme, runs on the dGPU).
 
 ## Notes for agents
 - Inside a container the installer exits 0 with a notice (pmie belongs on the host).
