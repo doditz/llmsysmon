@@ -72,6 +72,8 @@ pops up automatically.
   terminal you're already using.
 - `/pmie --detach` — opens the heartbeat in a small dedicated terminal window,
   so your main terminal stays free.
+
+  ![pmie heartbeat — real capture](assets/pmie-heartbeat.png)
 - `/pmie --detach-gui` — opens a graph window with line charts for write await
   and total await per disk. It follows your desktop dark/light theme and prefers
   the discrete GPU (`DRI_PRIME=1`) for smooth rendering. Requires `pcp-gui`,
